@@ -1,0 +1,343 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Animations;
+
+[RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(FMODUnity.StudioEventEmitter))]
+public class PlayerMovment : MonoBehaviour
+{
+    #region Values
+    [Header("Animations")]
+    [SerializeField] Animator anim;
+   public Animator rAnim;
+
+    [Header("Audio")]
+
+
+    //FMOD.Studio.EventInstance playThrowSound;
+
+
+    [SerializeField] PauseMenu pause;
+    [SerializeField] CameraController cam;
+    public AudioSource audioSource;
+
+    float flightTimer = 0;
+
+    [Header("MovmentValues")]
+    [SerializeField] float moveSpeed = 7f;
+    [SerializeField] float maxSpeed = 15f;
+    [SerializeField] float inAirMoveSpeed = 1f;
+    [SerializeField] float movmentMultiplayer = 10;
+    [SerializeField] float jumpForce = 5f;
+
+
+
+    [Header("Slope")]
+    [SerializeField] float maxAngle = 45;
+    [SerializeField] float slideSpeed = 0.2f;
+    [SerializeField] float timeTillSteepSlope = 0.2f;
+    private float currentSlopeAngle = 0;
+    private float timeOnSteepSlope = 0;
+    private float startTimeOnSteepSlope = 0;
+
+    [Header("Staircase")]
+    [SerializeField] GameObject stepRayUpper;
+    [SerializeField] GameObject stepRayLower;
+    [SerializeField] float stepSmooth = 1.5f;
+    [SerializeField] float stepDisLower = 1.2f;
+    [SerializeField] float stepDisHigher = 1.4f;
+    [SerializeField] bool usingStairs = false;
+
+    [Header("GroundStuff")]
+    [SerializeField] float timeTillnextPlay = 0.5f;
+    private float startTimeTillNextPLay;
+    public LayerMask ground;
+    public bool isGrunded = true;
+
+    Vector3 moveDirection;
+    Vector3 slopeMoveDirection;
+    float playerSize = 0;
+    float horizontalMovment = 0;
+    float verticalMovmment = 0;
+
+
+
+    [Header("Drag")]
+    [SerializeField] float groundDrag = 6f;
+    [SerializeField] float airDrag = 1.9f;
+
+    [Header("GameObjects")]
+    [HideInInspector] public Rigidbody rb = null;
+    [SerializeField] Transform orientation = null;
+
+    public GameObject FirePoint = null;
+    SpawnDevice SDevice = null;
+
+    [Header("Audio")]
+    [SerializeField] FMODUnity.StudioEventEmitter metalStairsevent;
+    public float metalStairsVolume;
+    FMODUnity.StudioEventEmitter footStepEvent;
+    public float footStepVolume;
+
+    #endregion
+
+    void Start()
+    {
+        rb = GetComponent<Rigidbody>();
+        FirePoint = GameObject.FindGameObjectWithTag("FirePoint");
+        if (FirePoint != null && SDevice == null)
+            SDevice = FirePoint.GetComponent<SpawnDevice>();
+
+        rb.freezeRotation = true;
+        playerSize = transform.localScale.y;
+        startTimeOnSteepSlope = timeOnSteepSlope;
+        startTimeTillNextPLay = timeTillnextPlay;
+
+        footStepEvent = GetComponent<FMODUnity.StudioEventEmitter> ();
+    }
+    void Jump()
+    {
+        //checks if you are on the ground
+        isGrunded = Physics.CheckSphere(transform.position - new Vector3(0, playerSize / 2 + 0.5f, 0), 0.4f, ground, QueryTriggerInteraction.Ignore);
+
+        //do jump 
+        if (Input.GetButtonDown("Jump") && isGrunded == true)
+        {
+            //do normal jump
+            if (!OnSlope() || !OnSteepSlope())
+            { rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse); }
+
+            //do slope jump by adding a backwards force
+            if (OnSlope() || OnSteepSlope())
+            {
+                var left = Vector3.Cross(slopehit.normal, Vector3.up);
+                var slope = Vector3.Cross(slopehit.normal, left);
+
+                rb.AddForce(slope * jumpForce, ForceMode.Impulse);
+            }
+
+            isGrunded = false;
+            anim.SetTrigger("Jump");
+            rAnim.SetTrigger("Jump");
+            FMODUnity.RuntimeManager.GetEventDescription("event:/Footsteps Metal Stairs").releaseAllInstances();
+            FMODUnity.RuntimeManager.GetEventDescription("event:/Footsteps").releaseAllInstances();
+        }
+
+
+    }
+    
+    private void Update()
+    {
+        DragController();
+        if (!pause.isPaused && pause != null)
+            Jump();
+        Animations();
+  
+    }
+    private void FixedUpdate()
+    {
+        //calls funtion in a fixed interwall
+        Movement();
+        OnSteepSlope();
+        Stairs();
+    }
+
+    private void OnDrawGizmos()
+    {
+        //draws the ground check on the ground
+        Gizmos.color = Color.red;
+        Gizmos.DrawWireSphere(transform.position - new Vector3(0, playerSize / 2 + 0.5f, 0), 0.2f);
+    }
+    void DragController()
+    {
+        //controlls drag
+        if (isGrunded)
+            rb.drag = groundDrag;
+        else if (!isGrunded)
+            rb.drag = airDrag;
+    }
+
+    RaycastHit slopehit;
+    bool OnSlope()
+    {
+        //shoots a ray down if it hits somthing that is not flat then returns true else false
+        if (Physics.Raycast(transform.position, Vector3.down, out slopehit, playerSize / 2 + 0.8f, ground, QueryTriggerInteraction.Ignore))
+        {
+            if (slopehit.normal != Vector3.up) { rb.useGravity = false; return true; }
+        }
+        return false;
+    }
+
+    bool OnSteepSlope()
+    {
+        if (OnSlope())
+        {
+            //gets the current angle of the slope
+            currentSlopeAngle = Vector3.Angle(slopehit.normal, Vector3.up);
+            //checks if the angle is higher then max angle in that case then you are on a steep slope
+            if (currentSlopeAngle > new Vector3(0, maxAngle).y || currentSlopeAngle > new Vector3(maxAngle, 0).x || currentSlopeAngle > new Vector3(0, 0, maxAngle).z)
+            { rb.useGravity = true; return true; }
+        }
+        //resets the steep slope timer
+        timeOnSteepSlope = startTimeOnSteepSlope;
+        return false;
+    }
+
+    void Movement()
+    {
+        bool isMoving = false;
+
+        //gets the movment keys from the unity key manager
+        horizontalMovment = Input.GetAxisRaw("Horizontal");
+        verticalMovmment = Input.GetAxisRaw("Vertical");
+
+   
+
+
+        //gets movedirection and the slope move direction
+        moveDirection = orientation.forward * verticalMovmment + orientation.right * horizontalMovment;
+        slopeMoveDirection = Vector3.ProjectOnPlane(moveDirection, slopehit.normal);
+
+         timeTillnextPlay -= Time.deltaTime;
+
+        if ((horizontalMovment != 0 || verticalMovmment != 0) && isGrunded)
+        {
+            isMoving = true;
+            if (timeTillnextPlay <= 0 && !OnSlope() && !OnSteepSlope())
+            {
+                metalStairsevent.Stop();
+                footStepEvent.Play();
+                footStepEvent.EventInstance.setVolume(footStepVolume);
+
+                timeTillnextPlay = startTimeTillNextPLay;
+            }
+        }
+
+        else if (horizontalMovment == 0 && verticalMovmment == 0)
+            isMoving = false;
+
+
+
+        // do move
+            if (rb.velocity.magnitude < maxSpeed && !OnSlope() && !OnSteepSlope() && isGrunded && isMoving)
+            {
+                rb.AddForce(moveDirection = Vector3.ClampMagnitude(moveDirection, 1) * moveSpeed * movmentMultiplayer, ForceMode.Force);
+            }
+        
+
+
+        // do air movment
+        if (rb.velocity.magnitude < maxSpeed && !OnSlope() && !OnSteepSlope() && !isGrunded)
+        {
+            rb.AddForce(moveDirection = Vector3.ClampMagnitude(moveDirection, 1) * inAirMoveSpeed * movmentMultiplayer, ForceMode.Force);
+        }
+
+        //steep Slope slide
+        if (rb.velocity.magnitude < maxSpeed && OnSteepSlope())
+        {
+            timeOnSteepSlope += Time.deltaTime;
+            if (timeOnSteepSlope > timeTillSteepSlope)
+                rb.AddForce(-transform.up * slideSpeed * movmentMultiplayer * currentSlopeAngle, ForceMode.Force);
+        }
+        //slope movment
+        else if (rb.velocity.magnitude < maxSpeed && isGrunded && OnSlope() && !OnSteepSlope() && isMoving)
+        {
+            rb.AddForce(slopeMoveDirection = Vector3.ClampMagnitude(slopeMoveDirection, 1) * moveSpeed * movmentMultiplayer, ForceMode.Force);
+            if (timeTillnextPlay <= 0)
+            {
+                footStepEvent.Stop();
+                metalStairsevent.Play();
+                metalStairsevent.EventInstance.setVolume(metalStairsVolume);
+                timeTillnextPlay = startTimeTillNextPLay;
+            }
+        }
+        if (!isGrunded)
+            flightTimer += Time.deltaTime;
+    }
+    float realeseTimer = 0.5f;
+    bool startRealeseTimer = true;
+    void Animations()
+    {
+      
+        if (horizontalMovment != 0 || verticalMovmment != 0)
+        {
+            anim.SetBool("Walking", true);
+            rAnim.SetBool("Walking", true);
+        }
+
+        else if (horizontalMovment == 0 && verticalMovmment == 0)
+        {
+            anim.SetBool("Walking", false);
+            rAnim.SetBool("Walking", false);
+        }
+
+        if (SDevice.InputButtonDown)
+        {
+            rAnim.SetTrigger("Cast");
+        }
+
+        if (SDevice.InputHoldButton)
+        {
+            rAnim.SetBool("CastHold", true);
+        }
+        else if (SDevice.InputButtonUp)
+        {
+            //TriggerPLayBool
+
+            //playThrowSound.start();
+            FMODUnity.RuntimeManager.PlayOneShot("event:/Disc Throw", transform.position);
+            rAnim.SetBool("CastHold", false);
+            rAnim.SetBool("DiscRealese", true);
+            startRealeseTimer = true;
+        }
+        if (startRealeseTimer)
+            realeseTimer -= Time.deltaTime;
+        if(realeseTimer <= 0)
+        {
+            rAnim.SetBool("DiscRealese", false);
+            startRealeseTimer = false;
+            realeseTimer = 0.5f;
+        }
+    }
+
+
+    void Stairs()
+    {
+        if (!OnSlope() && !OnSteepSlope() && isGrunded && usingStairs)
+        {
+            RaycastHit hitLower;
+            if (Physics.Raycast(stepRayLower.transform.position, Vector3.ProjectOnPlane(rb.velocity, transform.up), out hitLower, stepDisLower, ground, QueryTriggerInteraction.Ignore))
+            {
+                rb.useGravity = false;
+                RaycastHit hitUpper;
+                if (!Physics.Raycast(stepRayUpper.transform.position, Vector3.ProjectOnPlane(rb.velocity, transform.forward), out hitUpper, stepDisHigher, ground, QueryTriggerInteraction.Ignore))
+                {
+                    rb.position -= new Vector3(0f, -stepSmooth * Time.deltaTime, 0f);
+                }
+            }
+            else  
+            rb.useGravity = true; 
+        }
+        else if (!OnSlope() && !OnSteepSlope()) 
+            rb.useGravity = true;
+
+    }
+
+    private void OnCollisionEnter(Collision collision)
+    {
+
+        if (isGrunded && flightTimer >=0.3f) 
+        {
+            cam.isShaking = true;
+            cam.shakeDuration = 0.05f;
+            cam.cameraShakeMultiplier = 0.08f;
+            cam.amplitude = 0.01f;
+            cam.frequency = 0.05f;
+            FMODUnity.RuntimeManager.PlayOneShot("event:/Jump landing", transform.position);
+            flightTimer = 0;
+        }
+    }
+
+}
